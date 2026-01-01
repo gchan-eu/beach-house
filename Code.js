@@ -754,14 +754,36 @@ function reconcileCharges(expensesSheet, triggerRow) {
     return;
   }
 
-  if (!status || !status.toString().startsWith("Provisionally Charged")) {
-    SpreadsheetApp.getActive().toast("Only expenses with Status 'Provisionally Charged' can be reconciled.", "❌ Error", 5);
+  if (!status || (!status.toString().startsWith("Provisionally Charged") && !status.toString().startsWith("Reconciled"))) {
+    SpreadsheetApp.getActive().toast("Only expenses with Status 'Provisionally Charged' or 'Reconciled' can be reconciled.", "❌ Error", 5);
     return;
   }
 
-  const group = getReconciliationGroup(expensesSheet, startDate, endDate, expenseType);
+  Logger.log('Recon group params: startDate=' + startDate + ', endDate=' + endDate + ', expenseType=' + expenseType);
+  // Modified: Include both 'Provisionally Charged' and 'Reconciled' expenses in the group
+  const groupRaw = getReconciliationGroup(expensesSheet, startDate, endDate, expenseType);
+  Logger.log('Raw group length: ' + groupRaw.length);
+  if (groupRaw.length === 0) {
+    Logger.log('No rows matched in getReconciliationGroup.');
+  } else {
+    groupRaw.forEach(item => {
+      let status = expensesSheet.getRange(item.rowIndex, statusCol).getValue();
+      Logger.log('Raw group row ' + item.rowIndex + ' status: ' + status);
+    });
+  }
+  const group = groupRaw.filter(item => {
+    let status = expensesSheet.getRange(item.rowIndex, statusCol).getValue();
+    if (!status) return false;
+    status = String(status)
+      .replace(/\u00A0/g, " ")   // remove non-breaking spaces
+      .replace(/\s+/g, " ")      // collapse weird whitespace
+      .trim()
+      .toLowerCase();
+    return status.startsWith("provisionally charged") || status.startsWith("reconciled");
+  });
+  Logger.log('Group length after filter: ' + group.length);
   if (group.length === 0) {
-    SpreadsheetApp.getActive().toast("No provisionally charged expenses found in this date window and expense type.", "ℹ️ Info", 5);
+    SpreadsheetApp.getActive().toast("No provisionally charged or reconciled expenses found in this date window and expense type.", "ℹ️ Info", 5);
     return;
   }
 
@@ -1043,11 +1065,16 @@ function getReconciliationGroup(expensesSheet, startDate, endDate, expenseType) 
     const rowStart = row[startIdx];
     const rowEnd   = row[endIdx];
     const rowType  = row[typeIdx];
-
-    if (!status || !status.toString().startsWith("Provisionally Charged")) continue;
-    if (!sameDate(rowStart, startDate) || !sameDate(rowEnd, endDate)) continue;
-    if (rowType !== expenseType) continue;
-
+    const statusStr = status ? status.toString() : '';
+    const startMatch = sameDate(rowStart, startDate);
+    const endMatch = sameDate(rowEnd, endDate);
+    const typeMatch = rowType === expenseType;
+    Logger.log('ReconGroup row ' + (r+1) + ': status=' + statusStr + ', rowStart=' + rowStart + ', startMatch=' + startMatch + ', rowEnd=' + rowEnd + ', endMatch=' + endMatch + ', rowType=' + rowType + ', typeMatch=' + typeMatch);
+    if (!status) continue;
+    const statusNorm = statusStr.toLowerCase();
+    if (!(statusNorm.startsWith("provisionally charged") || statusNorm.startsWith("reconciled"))) continue;
+    if (!startMatch || !endMatch) continue;
+    if (!typeMatch) continue;
     result.push({
       rowIndex: r + 1,
       id: row[idIdx],
