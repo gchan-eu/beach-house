@@ -788,7 +788,10 @@ function reconcileCharges(expensesSheet, triggerRow) {
   createReconciliationAdjustments(group, finalCostByPid, chargedSoFarByPid, startDate, endDate);
 
   const now = new Date();
-  const statusText = "Reconciled (as of " + formatDate(now) + ")";
+  function formatDMY(d) {
+    return ("0" + d.getDate()).slice(-2) + "/" + ("0" + (d.getMonth() + 1)).slice(-2) + "/" + String(d.getFullYear()).slice(-2);
+  }
+  const statusText = "Reconciled (" + formatDMY(now) + ")";
 
   group.forEach(item => {
     expensesSheet.getRange(item.rowIndex, statusCol).setValue(statusText);
@@ -1258,6 +1261,55 @@ function createReconciliationAdjustments(groupExpenses, finalCostByPid, chargedS
       rowsToInsert.push(row);
     }
   }
+
+  // Add refund adjustments for people who were provisionally charged but have zero share in the period
+  Object.keys(chargedSoFarByPid).forEach(personName => {
+    // Find pid for this personName (Helper)
+    let pid = null;
+    for (let i = 0; i < peopleData.length; i++) {
+      if (resolveHelperFromPid(peopleData[i][codeCol - 1]) === personName) {
+        pid = peopleData[i][codeCol - 1];
+        break;
+      }
+    }
+    if (!pid) return;
+    if (pids.includes(pid)) return; // already handled above
+    const chargedSoFar = chargedSoFarByPid[personName] || 0;
+    if (chargedSoFar === 0) return;
+    // Refund adjustment: fair share is zero, so adjustment is -chargedSoFar
+    const adj = round2(0 - chargedSoFar);
+    if (adj !== 0) {
+      const today = new Date();
+      today.setHours(0,0,0,0);
+      function formatDMY(d) {
+        return ("0" + d.getDate()).slice(-2) + "/" + ("0" + (d.getMonth() + 1)).slice(-2) + "/" + String(d.getFullYear()).slice(-2);
+      }
+      let costLabel;
+      if (today > endDate) {
+        costLabel = "final cost";
+      } else {
+        costLabel = "cost (" + formatDMY(today) + ")";
+      }
+      const note =
+        "Period: " + formatDMY(startDate) + " – " + formatDMY(endDate) +
+        ", " + costLabel + ": 0.00" +
+        ", charged so far: " + chargedSoFar.toFixed(2) +
+        ", adjustment: " + adj.toFixed(2) +
+        " (0/" + totalDays + ").";
+      const accountValue = getAccountForPid(pid);
+      const row = new Array(headers.length);
+      row[idCol - 1]           = nextTransactionId++;
+      row[dateCol - 1]         = now;
+      row[typeCol - 1]         = "402 - Reconciliation";
+      row[expenseTypeCol - 1]  = expenseTypeValue;
+      row[amountCol - 1]       = adj;
+      row[personCol - 1]       = personName;
+      row[expenseIdCol - 1]    = primaryExpenseId;
+      row[noteCol - 1]         = note;
+      row[accountCol - 1]      = accountValue;
+      rowsToInsert.push(row);
+    }
+  });
 
   if (rowsToInsert.length > 0) {
     transactionsSheet.getRange(lastRow + 1, 1, rowsToInsert.length, headers.length).setValues(rowsToInsert);
