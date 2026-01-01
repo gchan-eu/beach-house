@@ -1190,49 +1190,60 @@ function createReconciliationAdjustments(groupExpenses, finalCostByPid, chargedS
   const daysByPid = getDaysByPid(startDate, endDate);
   const totalDays = Object.values(daysByPid).reduce((a, b) => a + b, 0);
 
-  // For each batch (expense) in the group, create an adjustment per person
-  groupExpenses.forEach(batch => {
-    // Proportion of this batch in the total group
-    const batchProportion = Math.abs(batch.amount) / Math.abs(groupExpenses.reduce((sum, b) => sum + b.amount, 0));
-    pids.forEach(pid => {
-      let finalCost = finalCostByPid[pid] || 0;
-      // Ensure finalCost is negative for charges
-      if (finalCost > 0) finalCost = -finalCost;
-      // Use Helper value for chargedSoFarByPid lookup
-      const personName = resolveHelperFromPid(pid);
-      const chargedSoFar = chargedSoFarByPid[personName] || 0;
-      // Adjustment for this batch: split the total adjustment proportionally
-      const totalAdj = round2(finalCost - chargedSoFar);
-      const adj = round2(totalAdj * batchProportion);
+  // Calculate group total charged so far
+  const groupTotalCharged = Object.values(chargedSoFarByPid).reduce((a, b) => a + b, 0);
+  // Calculate total days (sum of all person days)
+  // Already calculated above: const totalDays = Object.values(daysByPid).reduce((a, b) => a + b, 0);
 
-      if (Math.abs(adj) < 0.01) return;
+  // N-1 rounding on fair shares
+  let fairShares = [];
+  let runningFairShare = 0;
+  const n = pids.length;
+  for (let i = 0; i < n; i++) {
+    const pid = pids[i];
+    const personDays = daysByPid[pid] || 0;
+    const shareFraction = totalDays !== 0 ? personDays / totalDays : 0;
+    let fairShare;
+    if (i < n - 1) {
+      fairShare = round2(groupTotalCharged * shareFraction);
+      runningFairShare += fairShare;
+    } else {
+      // Last person gets the remainder to ensure sum matches groupTotalCharged
+      fairShare = round2(groupTotalCharged - runningFairShare);
+    }
+    fairShares.push(fairShare);
+  }
 
-      // Days info for reconciliation
-      const personDays = daysByPid[pid] || 0;
-      const staysInfo = ` (days ${personDays}/${totalDays})`;
+  for (let i = 0; i < n; i++) {
+    const pid = pids[i];
+    const personDays = daysByPid[pid] || 0;
+    const personName = resolveHelperFromPid(pid);
+    const chargedSoFar = chargedSoFarByPid[personName] || 0;
+    // Adjustment: fair share minus charged so far, rounded to 2 decimals
+    const adj = round2(fairShares[i] - chargedSoFar);
+    // Format period as dd/mm/yy
+    function formatDMY(d) {
+      return ("0" + d.getDate()).slice(-2) + "/" + ("0" + (d.getMonth() + 1)).slice(-2) + "/" + String(d.getFullYear()).slice(-2);
+    }
+    const today = new Date();
+    today.setHours(0,0,0,0);
+    let costLabel;
+    if (today > endDate) {
+      costLabel = "final cost";
+    } else {
+      costLabel = "cost (" + formatDMY(today) + ")";
+    }
+    const note =
+      "Period: " + formatDMY(startDate) + " – " + formatDMY(endDate) +
+      ", " + costLabel + ": " + fairShares[i].toFixed(2) +
+      ", charged so far: " + chargedSoFar.toFixed(2) +
+      ", adjustment: " + adj.toFixed(2) +
+      " (" + personDays + "/" + totalDays + ").";
 
-      // Format period as dd/mm/yy
-      function formatDMY(d) {
-        return ("0" + d.getDate()).slice(-2) + "/" + ("0" + (d.getMonth() + 1)).slice(-2) + "/" + String(d.getFullYear()).slice(-2);
-      }
-      const today = new Date();
-      today.setHours(0,0,0,0);
-      let costLabel;
-      if (today > endDate) {
-        costLabel = "final cost";
-      } else {
-        costLabel = "cost (" + formatDMY(today) + ")";
-      }
-      const note =
-        "Period: " + formatDMY(startDate) + " – " + formatDMY(endDate) +
-        ", " + costLabel + ": " + finalCost.toFixed(2) +
-        ", charged so far: " + chargedSoFar.toFixed(2) +
-        ", adjustment: " + adj.toFixed(2) +
-        " (" + personDays + "/" + totalDays + ").";
+    const accountValue = getAccountForPid(pid);
 
-      const accountValue = getAccountForPid(pid);
-
-      // Build row
+    // Only create a row if adjustment is not zero
+    if (adj !== 0) {
       const row = new Array(headers.length);
       row[idCol - 1]           = nextTransactionId++;
       row[dateCol - 1]         = now;
@@ -1240,13 +1251,13 @@ function createReconciliationAdjustments(groupExpenses, finalCostByPid, chargedS
       row[expenseTypeCol - 1]  = expenseTypeValue;
       row[amountCol - 1]       = adj; // negative: owes more, positive: refund
       row[personCol - 1]       = personName;
-      row[expenseIdCol - 1]    = batch.id;
+      row[expenseIdCol - 1]    = primaryExpenseId;
       row[noteCol - 1]         = note;
       row[accountCol - 1]      = accountValue;
 
       rowsToInsert.push(row);
-    });
-  });
+    }
+  }
 
   if (rowsToInsert.length > 0) {
     transactionsSheet.getRange(lastRow + 1, 1, rowsToInsert.length, headers.length).setValues(rowsToInsert);
