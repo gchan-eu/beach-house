@@ -741,11 +741,13 @@ function reconcileCharges(expensesSheet, triggerRow) {
   const statusCol  = headers.indexOf("Status") + 1;
   const startCol   = headers.indexOf("Start_Date") + 1;
   const endCol     = headers.indexOf("End_Date") + 1;
+  const typeCol    = headers.indexOf("Type") + 1;
   const lastRecCol = headers.indexOf("Last_Reconciliation_Date") + 1; // optional; may be 0
 
-  const status    = expensesSheet.getRange(triggerRow, statusCol).getValue();
-  const startDate = expensesSheet.getRange(triggerRow, startCol).getValue();
-  const endDate   = expensesSheet.getRange(triggerRow, endCol).getValue();
+  const status      = expensesSheet.getRange(triggerRow, statusCol).getValue();
+  const startDate   = expensesSheet.getRange(triggerRow, startCol).getValue();
+  const endDate     = expensesSheet.getRange(triggerRow, endCol).getValue();
+  const expenseType = expensesSheet.getRange(triggerRow, typeCol).getValue();
 
   if (!startDate || !endDate) {
     SpreadsheetApp.getActive().toast("Start_Date and End_Date must be set for reconciliation.", "❌ Error", 5);
@@ -757,9 +759,9 @@ function reconcileCharges(expensesSheet, triggerRow) {
     return;
   }
 
-  const group = getReconciliationGroup(expensesSheet, startDate, endDate);
+  const group = getReconciliationGroup(expensesSheet, startDate, endDate, expenseType);
   if (group.length === 0) {
-    SpreadsheetApp.getActive().toast("No provisionally charged expenses found in this date window.", "ℹ️ Info", 5);
+    SpreadsheetApp.getActive().toast("No provisionally charged expenses found in this date window and expense type.", "ℹ️ Info", 5);
     return;
   }
 
@@ -795,7 +797,7 @@ function reconcileCharges(expensesSheet, triggerRow) {
     }
   });
 
-  SpreadsheetApp.getActive().toast("Reconciliation completed for this period.", "✅ Reconciled", 4);
+  SpreadsheetApp.getActive().toast("Reconciliation completed for this period and expense type.", "✅ Reconciled", 4);
 }
 
 
@@ -1019,7 +1021,7 @@ function computeSharesByOvernightStays(startDate, endDate) {
 }
 
 
-function getReconciliationGroup(expensesSheet, startDate, endDate) {
+function getReconciliationGroup(expensesSheet, startDate, endDate, expenseType) {
   const values  = expensesSheet.getDataRange().getValues();
   const headers = values[0];
 
@@ -1028,6 +1030,7 @@ function getReconciliationGroup(expensesSheet, startDate, endDate) {
   const statusIdx  = headers.indexOf("Status");
   const startIdx   = headers.indexOf("Start_Date");
   const endIdx     = headers.indexOf("End_Date");
+  const typeIdx    = headers.indexOf("Type");
 
   const result = [];
 
@@ -1036,9 +1039,11 @@ function getReconciliationGroup(expensesSheet, startDate, endDate) {
     const status   = row[statusIdx];
     const rowStart = row[startIdx];
     const rowEnd   = row[endIdx];
+    const rowType  = row[typeIdx];
 
     if (!status || !status.toString().startsWith("Provisionally Charged")) continue;
     if (!sameDate(rowStart, startDate) || !sameDate(rowEnd, endDate)) continue;
+    if (rowType !== expenseType) continue;
 
     result.push({
       rowIndex: r + 1,
@@ -1067,7 +1072,7 @@ function getChargedSoFarForGroup(groupExpenses) {
   const headers = values[0];
 
   const expenseIdIdx = headers.indexOf("Expense_ID");
-  const pidIdx       = headers.indexOf("PID");
+  const personIdx    = headers.indexOf("Person");
   const amountIdx    = headers.indexOf("Amount");
 
   const charged = {};
@@ -1077,14 +1082,15 @@ function getChargedSoFarForGroup(groupExpenses) {
     const expId = row[expenseIdIdx];
     if (!expenseIds.includes(expId)) continue;
 
-    const pid    = row[pidIdx];
+    const person = row[personIdx];
     const amount = Number(row[amountIdx]) || 0;
 
-    if (!charged[pid]) charged[pid] = 0;
-    charged[pid] += amount;
+    if (!person) continue;
+    if (!charged[person]) charged[person] = 0;
+    charged[person] += amount;
   }
 
-  return charged; // { PID: totalAmount }
+  return charged; // { Helper: totalAmount }
 }
 
 
@@ -1093,38 +1099,153 @@ function createReconciliationAdjustments(groupExpenses, finalCostByPid, chargedS
   const lastRow  = transactionsSheet.getLastRow();
   const headers  = transactionsSheet.getRange(1, 1, 1, transactionsSheet.getLastColumn()).getValues()[0];
 
-  const dateCol       = headers.indexOf("Date") + 1;
-  const pidCol        = headers.indexOf("PID") + 1;
-  const amountCol     = headers.indexOf("Amount") + 1;
-  const expenseIdCol  = headers.indexOf("Expense_ID") + 1;
-  const noteCol       = headers.indexOf("Notes") + 1;
+  const idCol           = headers.indexOf("ID") + 1;
+  const dateCol         = headers.indexOf("Date") + 1;
+  const typeCol         = headers.indexOf("Type") + 1;
+  const expenseTypeCol  = headers.indexOf("Expense_Type") + 1;
+  const amountCol       = headers.indexOf("Amount") + 1;
+  const personCol       = headers.indexOf("Person") + 1;
+  const accountCol      = headers.indexOf("Account") + 1;
+  const expenseIdCol    = headers.indexOf("Expense_ID") + 1;
+  const noteCol         = headers.indexOf("Notes") + 1;
+
+  // Find next transaction ID
+  let nextTransactionId = 1;
+  if (lastRow > 1) {
+    const idRange = transactionsSheet.getRange(2, idCol, lastRow - 1).getValues().flat().filter(n => typeof n === "number");
+    if (idRange.length > 0) nextTransactionId = Math.max(...idRange) + 1;
+  }
 
   const now = new Date();
   const rowsToInsert = [];
   const pids = Object.keys(finalCostByPid);
 
+
+  // Get primary expense type for linking
   const primaryExpenseId = groupExpenses[0].id; // for linking
+  const expensesSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("EXPENSES");
+  const expenseTypeHeaderCol = getColumnIndexByHeader(expensesSheet, "Type");
+  const expenseIdHeaderCol = getColumnIndexByHeader(expensesSheet, "ID");
+  let expenseTypeValue = "";
+  for (let r = 2; r <= expensesSheet.getLastRow(); r++) {
+    if (expensesSheet.getRange(r, expenseIdHeaderCol).getValue() == primaryExpenseId) {
+      expenseTypeValue = expensesSheet.getRange(r, expenseTypeHeaderCol).getValue();
+      break;
+    }
+  }
 
-  pids.forEach(pid => {
-    const finalCost    = finalCostByPid[pid] || 0;
-    const chargedSoFar = chargedSoFarByPid[pid] || 0;
-    const adj          = round2(finalCost - chargedSoFar);
+  // Prepare PEOPLE lookup for Account
+  const peopleSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("PEOPLE");
+  const codeCol = getColumnIndexByHeader(peopleSheet, "Code");
+  const accountColPeople = getColumnIndexByHeader(peopleSheet, "Account_Number");
+  const helperCol = getColumnIndexByHeader(peopleSheet, "Helper");
+  const peopleData = peopleSheet.getRange(2, 1, peopleSheet.getLastRow() - 1, peopleSheet.getLastColumn()).getValues();
 
-    if (Math.abs(adj) < 0.01) return;
+  function getAccountForPid(pid) {
+    for (let i = 0; i < peopleData.length; i++) {
+      if (String(peopleData[i][codeCol - 1]) === String(pid)) {
+        return peopleData[i][accountColPeople - 1];
+      }
+    }
+    return '';
+  }
 
-    const note = "Reconciliation for period " + formatDate(startDate) + " – " + formatDate(endDate) +
-      ". Final cost: " + finalCost.toFixed(2) +
-      ", charged so far: " + chargedSoFar.toFixed(2) +
-      ", adjustment: " + adj.toFixed(2) + ".";
+  // Calculate stays info for the period (using Days, not Total_Stays)
+  function getDaysByPid(startDate, endDate) {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const overnightSheet = ss.getSheetByName("OVERNIGHT_STAYS");
+    if (!overnightSheet) return {};
 
-    const row = new Array(headers.length);
-    row[dateCol - 1]       = now;
-    row[pidCol - 1]        = pid;
-    row[amountCol - 1]     = -adj; // follow your sign convention
-    row[expenseIdCol - 1]  = primaryExpenseId;
-    row[noteCol - 1]       = note;
+    const osPersonIdCol  = getColumnIndexByHeader(overnightSheet, "Person_ID");
+    const osStartCol     = getColumnIndexByHeader(overnightSheet, "Start_Date");
+    const osEndCol       = getColumnIndexByHeader(overnightSheet, "End_Date");
 
-    rowsToInsert.push(row);
+    const lastRow = overnightSheet.getLastRow();
+    const daysByPid = {};
+    const today = new Date();
+    today.setHours(0,0,0,0); // ignore time
+
+    if (lastRow > 1) {
+      const data = overnightSheet.getRange(2, 1, lastRow - 1, overnightSheet.getLastColumn()).getValues();
+
+      data.forEach(row => {
+        const rowStart = row[osStartCol - 1];
+        const rowEnd   = row[osEndCol - 1];
+        if (!(rowStart instanceof Date) || !(rowEnd instanceof Date)) return;
+
+        // Calculate overlap between stay and reconciliation period, capped at today
+        const overlapStart = new Date(Math.max(rowStart, startDate));
+        let overlapEnd = new Date(Math.min(rowEnd, endDate, today));
+        if (overlapEnd > today) overlapEnd = today;
+        const overlapDays = Math.floor((overlapEnd - overlapStart) / (1000 * 60 * 60 * 24)) + 1;
+        if (overlapStart <= overlapEnd && overlapDays > 0) {
+          const personId = row[osPersonIdCol - 1];
+          daysByPid[personId] = (daysByPid[personId] || 0) + overlapDays;
+        }
+      });
+    }
+    return daysByPid;
+  }
+
+  const daysByPid = getDaysByPid(startDate, endDate);
+  const totalDays = Object.values(daysByPid).reduce((a, b) => a + b, 0);
+
+  // For each batch (expense) in the group, create an adjustment per person
+  groupExpenses.forEach(batch => {
+    // Proportion of this batch in the total group
+    const batchProportion = Math.abs(batch.amount) / Math.abs(groupExpenses.reduce((sum, b) => sum + b.amount, 0));
+    pids.forEach(pid => {
+      let finalCost = finalCostByPid[pid] || 0;
+      // Ensure finalCost is negative for charges
+      if (finalCost > 0) finalCost = -finalCost;
+      // Use Helper value for chargedSoFarByPid lookup
+      const personName = resolveHelperFromPid(pid);
+      const chargedSoFar = chargedSoFarByPid[personName] || 0;
+      // Adjustment for this batch: split the total adjustment proportionally
+      const totalAdj = round2(finalCost - chargedSoFar);
+      const adj = round2(totalAdj * batchProportion);
+
+      if (Math.abs(adj) < 0.01) return;
+
+      // Days info for reconciliation
+      const personDays = daysByPid[pid] || 0;
+      const staysInfo = ` (days ${personDays}/${totalDays})`;
+
+      // Format period as dd/mm/yy
+      function formatDMY(d) {
+        return ("0" + d.getDate()).slice(-2) + "/" + ("0" + (d.getMonth() + 1)).slice(-2) + "/" + String(d.getFullYear()).slice(-2);
+      }
+      const today = new Date();
+      today.setHours(0,0,0,0);
+      let costLabel;
+      if (today > endDate) {
+        costLabel = "final cost";
+      } else {
+        costLabel = "cost (" + formatDMY(today) + ")";
+      }
+      const note =
+        "Period: " + formatDMY(startDate) + " – " + formatDMY(endDate) +
+        ", " + costLabel + ": " + finalCost.toFixed(2) +
+        ", charged so far: " + chargedSoFar.toFixed(2) +
+        ", adjustment: " + adj.toFixed(2) +
+        " (" + personDays + "/" + totalDays + ").";
+
+      const accountValue = getAccountForPid(pid);
+
+      // Build row
+      const row = new Array(headers.length);
+      row[idCol - 1]           = nextTransactionId++;
+      row[dateCol - 1]         = now;
+      row[typeCol - 1]         = "402 - Reconciliation";
+      row[expenseTypeCol - 1]  = expenseTypeValue;
+      row[amountCol - 1]       = adj; // negative: owes more, positive: refund
+      row[personCol - 1]       = personName;
+      row[expenseIdCol - 1]    = batch.id;
+      row[noteCol - 1]         = note;
+      row[accountCol - 1]      = accountValue;
+
+      rowsToInsert.push(row);
+    });
   });
 
   if (rowsToInsert.length > 0) {
