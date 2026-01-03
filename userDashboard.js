@@ -8,8 +8,10 @@ function updateUserDashboard() {
 	const peopleSheet = ss.getSheetByName("PEOPLE");
 	const transactionsSheet = ss.getSheetByName("TRANSACTIONS");
 	const overnightSheet = ss.getSheetByName("OVERNIGHT_STAYS");
+	const ownershipSetsSheet = ss.getSheetByName("OWNERSHIP_SETS");
+	const ownershipDetailsSheet = ss.getSheetByName("OWNERSHIP_DETAILS");
 
-	if (!dashboardSheet || !peopleSheet || !transactionsSheet || !overnightSheet) {
+	if (!dashboardSheet || !peopleSheet || !transactionsSheet || !overnightSheet || !ownershipSetsSheet || !ownershipDetailsSheet) {
 		SpreadsheetApp.getActive().toast("Required sheet missing.", "❌ Error", 5);
 		return;
 	}
@@ -30,7 +32,6 @@ function updateUserDashboard() {
 	const tPersonCol = tHeaders.indexOf("Person");
 	const tAmountCol = tHeaders.indexOf("Amount");
 	const tTypeCol = tHeaders.indexOf("Type");
-	// const tDateCol = tHeaders.indexOf("Date"); // Not used for now
 
 	// Get overnight stays
 	const osData = overnightSheet.getDataRange().getValues();
@@ -41,14 +42,49 @@ function updateUserDashboard() {
 	const osEndCol = osHeaders.indexOf("End_Date");
 	const osCountCol = osHeaders.indexOf("Person_Count");
 
+	// Get latest ownership set ID from OWNERSHIP_SETS (latest by Date)
+	const ownershipSetsData = ownershipSetsSheet.getDataRange().getValues();
+	const ownershipSetsHeaders = ownershipSetsData[0];
+	const setIdCol = ownershipSetsHeaders.indexOf("ID");
+	const setDateCol = ownershipSetsHeaders.indexOf("Date");
+	let latestSetId = null;
+	if (setIdCol !== -1 && setDateCol !== -1) {
+		// Find row with latest date
+		let latestDate = null;
+		ownershipSetsData.slice(1).forEach(row => {
+			const date = row[setDateCol];
+			if (date instanceof Date && (!latestDate || date > latestDate)) {
+				latestDate = date;
+				latestSetId = row[setIdCol];
+			}
+		});
+	}
+
+	// Get ownership percentages from OWNERSHIP_DETAILS for latest set
+	const ownershipDetailsData = ownershipDetailsSheet.getDataRange().getValues();
+	const ownershipDetailsHeaders = ownershipDetailsData[0];
+	const ownerSetIdCol = ownershipDetailsHeaders.indexOf("Ownership_Set_ID");
+	const ownerCodeCol = ownershipDetailsHeaders.indexOf("Owner_Code");
+	const ownerPctCol = ownershipDetailsHeaders.indexOf("Percentage");
+	// Build a map: code -> percentage
+	let ownershipMap = {};
+	if (latestSetId !== null && ownerSetIdCol !== -1 && ownerCodeCol !== -1 && ownerPctCol !== -1) {
+		ownershipDetailsData.slice(1).forEach(row => {
+			if (row[ownerSetIdCol] == latestSetId) {
+				// Store raw percentage value (e.g., 20.83333333)
+				ownershipMap[row[ownerCodeCol]] = Number(row[ownerPctCol]) || 0;
+			}
+		});
+	}
+
 	// Prepare dashboard rows for the User_Dashboard table
 	const dashboardRows = [
-		["Person", "Account_Balance", "Deposits", "Withdrawals", "Charges", "Days", "Days%", "Stays", "Stays%"]
+		["Person", "Ownership%", "Account_Balance", "Deposits", "Withdrawals", "Charges", "Days", "Days%", "Stays", "Stays%"]
 	];
-
 
 	// First, collect all totals for all people
 	const personStats = personList.map(person => {
+		let ownershipPercentage = ownershipMap[person.code] || 0;
 		let deposits = 0;
 		let withdrawals = 0;
 		let charges = 0;
@@ -90,6 +126,7 @@ function updateUserDashboard() {
 
 		return {
 			name: person.name,
+			ownershipPercentage,
 			accountBalance,
 			deposits,
 			withdrawals,
@@ -105,10 +142,14 @@ function updateUserDashboard() {
 
 	// Add rows with percentage calculations
 	personStats.forEach(p => {
-		const pctDays = grandTotalDays > 0 ? Math.round((p.totalDays / grandTotalDays) * 10000) / 100 : 0;
-		const pctStays = grandTotalStays > 0 ? Math.round((p.totalStays / grandTotalStays) * 10000) / 100 : 0;
+		// Calculate as decimals (e.g., 0.25 for 25%)
+		const pctDays = grandTotalDays > 0 ? p.totalDays / grandTotalDays : 0;
+		const pctStays = grandTotalStays > 0 ? p.totalStays / grandTotalStays : 0;
+		// Format ownership percentage as a percentage string (e.g., 20.83333%)
+		const ownershipPctStr = p.ownershipPercentage.toFixed(5) + "%";
 		dashboardRows.push([
 			p.name,
+			ownershipPctStr,
 			round2(p.accountBalance),
 			round2(p.deposits),
 			round2(p.withdrawals),
