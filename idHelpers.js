@@ -3,12 +3,23 @@
 function assignId(sheet, row, col, triggerColumnName, idColumnName, startNumber) {
   const triggerColumn = getColumnIndexByHeader(sheet, triggerColumnName);
   const idColumn = getColumnIndexByHeader(sheet, idColumnName);
-  if (row === 1 || col !== triggerColumn) return;
+  Logger.log('assignId: row=%s, col=%s, triggerColumn=%s, idColumn=%s', row, col, triggerColumn, idColumn);
+  if (row === 1 || col !== triggerColumn) {
+    Logger.log('assignId: Not assigning (row 1 or not trigger column)');
+    return;
+  }
   const idCell = sheet.getRange(row, idColumn);
-  if (idCell.getValue()) return;
+  Logger.log('assignId: idCell.getValue()=%s', idCell.getValue());
+  if (idCell.getValue()) {
+    Logger.log('assignId: ID already exists, skipping');
+    return;
+  }
   const idRange = sheet.getRange(2, idColumn, sheet.getLastRow() - 1).getValues();
+  Logger.log('assignId: idRange=%s', JSON.stringify(idRange));
   const existingIds = idRange.flat().filter(n => typeof n === "number");
+  Logger.log('assignId: existingIds=%s', JSON.stringify(existingIds));
   const nextId = existingIds.length > 0 ? Math.max(...existingIds) + 1 : startNumber;
+  Logger.log('assignId: nextId=%s', nextId);
   idCell.setValue(nextId);
 }
 

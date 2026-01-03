@@ -1,27 +1,10 @@
 /**
- * Trigger: Updates the dashboard whenever the DASHBOARD sheet is selected.
- * To use, set this as an installable onSelectionChange trigger in the Apps Script UI.
- * (Simple triggers cannot modify other sheets, so this must be installable.)
- * @param {GoogleAppsScript.Events.SheetsOnSelectionChange} e
- */
-function onSelectionChange(e) {
-	if (!e) return;
-	var sheet = e.range.getSheet();
-	/**
-	 * Updates the DASHBOARD sheet with wallet balances, deposits, charges, days, and stays for each person,
-	 * filtered by date range if 'Date From' and 'Date To' are set in cells B1 and B2.
-	 */
-	function updateDashboard() {
-		updateDashboard();
-	}
-}
-/**
- * Updates the DASHBOARD sheet with wallet balances, deposits, charges, days, and stays for each person.
+ * Updates the USER_DASHBOARD sheet's User_Dashboard table with account balances, deposits, withdrawals, charges, and days for each person.
  * Assumes PEOPLE, TRANSACTIONS, and OVERNIGHT_STAYS sheets exist.
  */
-function updateDashboard() {
+function updateUserDashboard() {
 	const ss = SpreadsheetApp.getActiveSpreadsheet();
-	const dashboardSheet = ss.getSheetByName("DASHBOARD");
+	const dashboardSheet = ss.getSheetByName("USER_DASHBOARD");
 	const peopleSheet = ss.getSheetByName("PEOPLE");
 	const transactionsSheet = ss.getSheetByName("TRANSACTIONS");
 	const overnightSheet = ss.getSheetByName("OVERNIGHT_STAYS");
@@ -30,12 +13,6 @@ function updateDashboard() {
 		SpreadsheetApp.getActive().toast("Required sheet missing.", "❌ Error", 5);
 		return;
 	}
-
-	// Read date filter from dashboard sheet (B1: Date From, B2: Date To)
-	let dateFrom = dashboardSheet.getRange("B1").getValue();
-	let dateTo = dashboardSheet.getRange("B2").getValue();
-	if (!(dateFrom instanceof Date)) dateFrom = null;
-	if (!(dateTo instanceof Date)) dateTo = null;
 
 	// Get people
 	const peopleData = peopleSheet.getDataRange().getValues();
@@ -53,7 +30,7 @@ function updateDashboard() {
 	const tPersonCol = tHeaders.indexOf("Person");
 	const tAmountCol = tHeaders.indexOf("Amount");
 	const tTypeCol = tHeaders.indexOf("Type");
-	const tDateCol = tHeaders.indexOf("Date");
+	// const tDateCol = tHeaders.indexOf("Date"); // Not used for now
 
 	// Get overnight stays
 	const osData = overnightSheet.getDataRange().getValues();
@@ -64,69 +41,86 @@ function updateDashboard() {
 	const osEndCol = osHeaders.indexOf("End_Date");
 	const osCountCol = osHeaders.indexOf("Person_Count");
 
-	// Prepare dashboard rows
+	// Prepare dashboard rows for the User_Dashboard table
 	const dashboardRows = [
-		["Person", "Wallet Balance", "Total Deposited", "Total Charges", "Total Days", "Total Stays"]
+		["Person", "Account_Balance", "Deposits", "Withdrawals", "Charges", "Days", "Days%", "Stays", "Stays%"]
 	];
 
-	personList.forEach(person => {
+
+	// First, collect all totals for all people
+	const personStats = personList.map(person => {
+		let deposits = 0;
+		let withdrawals = 0;
+		let charges = 0;
+		let accountBalance = 0;
+		let totalDays = 0;
+		let totalStays = 0;
+
 		// Transactions
-		let totalDeposited = 0;
-		let totalCharges = 0;
-		let walletBalance = 0;
 		tData.slice(1).forEach(row => {
 			if (row[tPersonCol] == person.name) {
 				const amt = Number(row[tAmountCol]) || 0;
-				const type = row[tTypeCol] || "";
-				const tDate = row[tDateCol];
-				// Filter by date range if set
-				if (dateFrom && tDate instanceof Date && tDate < dateFrom) return;
-				if (dateTo && tDate instanceof Date && tDate > dateTo) return;
-				if (String(type).toLowerCase().includes("deposit")) {
-					totalDeposited += amt;
-				} else if (String(type).toLowerCase().includes("charge") || String(type).toLowerCase().includes("reconciliation")) {
-					totalCharges += amt;
+				const type = String(row[tTypeCol] || "").toLowerCase();
+				if (type.includes("deposit")) {
+					deposits += amt;
+				} else if (type.includes("withdrawal")) {
+					withdrawals += amt;
+				} else if (type.includes("charge") || type.includes("reconciliation")) {
+					charges += amt;
 				}
-				walletBalance += amt;
+				accountBalance += amt;
 			}
 		});
 
-		// Overnight stays
-		let totalDays = 0;
-		let totalStays = 0;
+		// Overnight stays (Days)
 		osData.slice(1).forEach(row => {
 			if (row[osPersonIdCol] == person.code || row[osPersonCol] == person.name) {
 				const start = row[osStartCol];
 				const end = row[osEndCol];
 				const count = Number(row[osCountCol]) || 1;
-				// Filter by date range if set
-				if (dateFrom && start instanceof Date && end instanceof Date && end < dateFrom) return;
-				if (dateTo && start instanceof Date && end instanceof Date && start > dateTo) return;
 				if (start instanceof Date && end instanceof Date) {
-					// Calculate overlap with filter
-					let overlapStart = dateFrom && start < dateFrom ? dateFrom : start;
-					let overlapEnd = dateTo && end > dateTo ? dateTo : end;
-					const days = Math.floor((overlapEnd - overlapStart) / (1000 * 60 * 60 * 24)) + 1;
+					const days = Math.floor((end - start) / (1000 * 60 * 60 * 24)) + 1;
 					if (days > 0) {
-						totalDays += days * count;
-						totalStays += count;
+						totalDays += days;
+						totalStays += days * count;
 					}
 				}
 			}
 		});
 
-		dashboardRows.push([
-			person.name,
-			round2(walletBalance),
-			round2(totalDeposited),
-			round2(totalCharges),
+		return {
+			name: person.name,
+			accountBalance,
+			deposits,
+			withdrawals,
+			charges,
 			totalDays,
 			totalStays
+		};
+	});
+
+	// Calculate grand totals
+	const grandTotalDays = personStats.reduce((sum, p) => sum + p.totalDays, 0);
+	const grandTotalStays = personStats.reduce((sum, p) => sum + p.totalStays, 0);
+
+	// Add rows with percentage calculations
+	personStats.forEach(p => {
+		const pctDays = grandTotalDays > 0 ? Math.round((p.totalDays / grandTotalDays) * 10000) / 100 : 0;
+		const pctStays = grandTotalStays > 0 ? Math.round((p.totalStays / grandTotalStays) * 10000) / 100 : 0;
+		dashboardRows.push([
+			p.name,
+			round2(p.accountBalance),
+			round2(p.deposits),
+			round2(p.withdrawals),
+			round2(p.charges),
+			p.totalDays,
+			pctDays,
+			p.totalStays,
+			pctStays
 		]);
 	});
 
-	// Write to dashboard
-	dashboardSheet.clearContents();
+	// Find the User_Dashboard table range (assume it starts at A1)
 	dashboardSheet.getRange(1, 1, dashboardRows.length, dashboardRows[0].length).setValues(dashboardRows);
 }
-// ...existing code from dashboard.js...
+

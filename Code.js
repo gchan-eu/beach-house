@@ -27,6 +27,10 @@ function onEdit(e) {
       handleTransactions(e);
       break;
 
+    case "USER_DASHBOARD":
+      handleUserDashboard(e);
+      break;
+
     // Add more sheets here
   }
 }

@@ -40,3 +40,6 @@ function handleTransactions(e) {
   // add more TRANSACTIONS features here
 }
 
+function handleUserDashboard(e) {
+	updateUserDashboard();
+}
