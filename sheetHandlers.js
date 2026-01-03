@@ -43,3 +43,7 @@ function handleTransactions(e) {
 function handleUserDashboard(e) {
 	updateUserDashboard();
 }
+
+function handleHouseDashboard(e) {
+	updateHouseDashboard();
+}
