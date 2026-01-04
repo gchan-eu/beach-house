@@ -74,9 +74,9 @@ function updateOwnerTransactions() {
   const expTypeCatCol = expTypeHeaders.indexOf("Category");
   const expTypeDescCol = expTypeHeaders.indexOf("Description");
 
-  // Build table headers
+  // Build table headers (remove Expense_Date and Notes)
   const tableHeaders = [
-    "Date", "Type", "Category", "Description", "Amount", "Expense_Date", "Expense_Notes", "Receipt", "Notes"
+    "Date", "Type", "Category", "Description", "Amount", "Expense_Notes", "Receipt"
   ];
 
   // Delete all rows below the header (row 6) to remove old transaction rows
@@ -109,8 +109,6 @@ function updateOwnerTransactions() {
       const startDate = expStartDateCol >= 0 ? expRow[expStartDateCol] : "";
       const endDate = expEndDateCol >= 0 ? expRow[expEndDateCol] : "";
       if (startDate && endDate) {
-        // Format as (yy/mm/dd-yy/mm/dd) or (dd/mm/yy-dd/mm/yy) depending on your preference
-        // We'll use dd/mm/yy as in your example
         function formatDate(d) {
           if (d instanceof Date) {
             const day = ("0" + d.getDate()).slice(-2);
@@ -118,7 +116,6 @@ function updateOwnerTransactions() {
             const year = ("" + d.getFullYear()).slice(-2);
             return `${day}/${month}/${year}`;
           } else if (typeof d === "string" && d.match(/^\d{4}-\d{2}-\d{2}/)) {
-            // If string in ISO format
             const [y, m, day] = d.split("-");
             return `${day}/${m}/${y.slice(-2)}`;
           } else {
@@ -150,22 +147,18 @@ function updateOwnerTransactions() {
       expReceipt = expRow[expReceiptCol];
       Logger.log(`Expense row ${expRowIdx} fallback value: ${expReceipt}`);
     }
-    // Debug: Log the expReceipt value for troubleshooting
     if (expReceipt && typeof expReceipt === "string" && expReceipt.trim() !== "") {
       Logger.log(`expReceipt for Expense_ID ${txnExpenseId}: ${expReceipt}`);
     }
 
-    // Find expense type row by Code
     let expTypeRow = expTypeData.find(r => r[expTypeCodeCol] == expCode);
     let expCategory = expTypeRow ? expTypeRow[expTypeCatCol] : "";
     let expDescription = expTypeRow ? expTypeRow[expTypeDescCol] : "";
 
-    // If expReceipt is a non-empty string and looks like a link, create a HYPERLINK formula; otherwise, show as plain text
     let receiptCell = "";
     let isLink = false;
     if (expReceipt && typeof expReceipt === "string" && expReceipt.trim() !== "") {
       if (/^https?:\/\//i.test(expReceipt.trim())) {
-        // Use normal quotes for the formula
         receiptCell = `=HYPERLINK("${expReceipt.trim()}", "View")`;
         isLink = true;
       } else {
@@ -173,30 +166,29 @@ function updateOwnerTransactions() {
       }
     }
 
+    // Remove Notes from output row
     return [
       txnDate,
       txnType,
       expCategory,
       expDescription,
       txnAmount,
-      expDate,
       expNotes,
-      receiptCell,
-      txnNotes
+      receiptCell
     ];
   });
 
   // Write table to dashboard, starting at row 6
   dashboardSheet.getRange(6, 1, 1, tableHeaders.length).setValues([tableHeaders]);
   if (tableRows.length > 0) {
-    // Write all columns except Receipt with setValues
-    const values = tableRows.map(row => row.map((cell, i) => (i === 7 ? null : cell)));
+    // Write all columns except Receipt with setValues (Notes removed, so Receipt is now col 6)
+    const values = tableRows.map(row => row.map((cell, i) => (i === 6 ? null : cell)));
     dashboardSheet.getRange(7, 1, tableRows.length, tableHeaders.length).setValues(values);
 
     // Write Receipt column cell-by-cell: setFormula for links, setValue for plain text
     for (let i = 0; i < tableRows.length; i++) {
-      const cellValue = tableRows[i][7];
-      const cell = dashboardSheet.getRange(7 + i, 8);
+      const cellValue = tableRows[i][6]; // Receipt is now col 6
+      const cell = dashboardSheet.getRange(7 + i, 7); // Column G
       if (cellValue && typeof cellValue === 'string' && cellValue.startsWith('=HYPERLINK')) {
         cell.setFormula(cellValue);
       } else if (cellValue) {
@@ -206,9 +198,57 @@ function updateOwnerTransactions() {
       }
     }
 
+    // Add Notes as a note to the Amount column with custom logic
+    for (let i = 0; i < tableRows.length; i++) {
+      const typeValue = tableRows[i][1]; // Type column
+      // Expense_Date is no longer a column, so get it from expRow
+      let expenseDate = "";
+      let expNotesVal = "";
+      // Find expense row index by ID again
+      const txnExpenseId = ownerTxns[i][tExpenseIdCol];
+      let expRowIdx = expData.findIndex(r => r[expIdCol] == txnExpenseId);
+      let expRow = expRowIdx >= 0 ? expData[expRowIdx] : null;
+      if (expRow) {
+        expenseDate = expRow[expDateCol];
+        expNotesVal = expRow[expNotesCol];
+      }
+      const expenseNotes = tableRows[i][5]; // Expense_Notes column
+      // Notes column is deprecated, so get transactionNotes from ownerTxns
+      const transactionNotes = ownerTxns[i][tNotesCol];
+      let noteValue = '';
+      function formatToDDMMYY(dateVal) {
+        if (!dateVal) return '';
+        let iso = '';
+        if (dateVal instanceof Date) {
+          iso = formatDate(dateVal); // yyyy-MM-dd
+        } else if (typeof dateVal === 'string' && dateVal.match(/^\d{4}-\d{2}-\d{2}/)) {
+          iso = dateVal;
+        } else {
+          return dateVal;
+        }
+        const [y, m, d] = iso.split('-');
+        return `${d}/${m}/${y.slice(-2)}`;
+      }
+      if (typeValue === '401 - Charge') {
+        noteValue =
+          'Expense Date: ' + (expenseDate ? formatToDDMMYY(expenseDate) : '') + '\n' +
+          'Transaction Notes: ' + (transactionNotes ? transactionNotes : '');
+      } else if (typeValue === '101 - Deposit') {
+        noteValue = 'Transaction Notes: ' + (transactionNotes ? transactionNotes : '');
+      } else {
+        noteValue = transactionNotes ? transactionNotes : '';
+      }
+      const amountCell = dashboardSheet.getRange(7 + i, 5); // Amount column (E)
+      if (noteValue && typeof noteValue === 'string' && noteValue.trim() !== '') {
+        amountCell.setNote(noteValue);
+      } else {
+        amountCell.setNote('');
+      }
+    }
+
     // Add footer row with sum of Amount column
     const footerRow = Array(tableHeaders.length).fill('');
-    footerRow[3] = 'Total:'; // Description column (index 3)
+    footerRow[3] = 'Total:'; // Description column (index 3, now D)
     // Amount column is index 4 (column E)
     const amountStart = 7;
     const amountEnd = 7 + tableRows.length - 1;
