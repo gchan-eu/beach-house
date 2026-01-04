@@ -3,6 +3,7 @@
  */
 function updateOwnerDashboard() {
   updateOwnerTransactions();
+  updateOwnerOvernightStays();
 }
 
 /**
@@ -223,3 +224,77 @@ function updateOwnerTransactions() {
   }
 }
 
+/**
+ * Updates the Overnight Stays table in the OWNER_DASHBOARD sheet, placing it dynamically below the transactions table.
+ * Columns: Start_Date, End_date, Days, Person_Count, Stays, Notes
+ */
+function updateOwnerOvernightStays() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const dashboardSheet = ss.getSheetByName("OWNER_DASHBOARD");
+  const peopleSheet = ss.getSheetByName("PEOPLE");
+  const overnightSheet = ss.getSheetByName("Overnight_Stays");
+  if (!dashboardSheet || !peopleSheet || !overnightSheet) return;
+
+  // Find the last row of the transactions table (footer row)
+  // Table header is at row 6, data starts at row 7
+  let row = 7;
+  while (dashboardSheet.getRange(row, 1).getValue() !== "" || dashboardSheet.getRange(row, 2).getValue() !== "") {
+    row++;
+  }
+  // Now row points to the first empty row after the transactions table data
+  // The footer is at row-1, so the overnight table should start after a gap
+  const overnightHeaderRow = row + 1;
+
+  // Define headers
+  const overnightHeaders = [
+    'Start_Date', 'End_date', 'Days', 'Person_Count', 'Stays', 'Notes'
+  ];
+
+  // Get owner name from B1
+  const ownerName = dashboardSheet.getRange("B1").getValue();
+  if (!ownerName) return;
+
+  // Get People data
+  const peopleData = peopleSheet.getDataRange().getValues();
+  const peopleHeaders = peopleData[0];
+  const nameCol = peopleHeaders.indexOf("Name");
+  const codeCol = peopleHeaders.indexOf("Code");
+  let personCode = null;
+  peopleData.slice(1).forEach(row => {
+    if (row[nameCol] == ownerName) {
+      personCode = row[codeCol];
+    }
+  });
+  if (!personCode) return;
+
+  // Get Overnight_Stays data
+  const overnightData = overnightSheet.getDataRange().getValues();
+  const overnightHeadersRow = overnightData[0];
+  const osPersonIdCol = overnightHeadersRow.indexOf("Person_ID");
+  const osStartDateCol = overnightHeadersRow.indexOf("Start_Date");
+  const osEndDateCol = overnightHeadersRow.indexOf("End_Date");
+  const osDaysCol = overnightHeadersRow.indexOf("Days");
+  const osPersonCountCol = overnightHeadersRow.indexOf("Person_Count");
+  const osStaysCol = overnightHeadersRow.indexOf("Total_Stays");
+  const osNotesCol = overnightHeadersRow.indexOf("Notes");
+
+  // Filter rows for this person
+  const overnightRows = overnightData.slice(1)
+    .filter(row => row[osPersonIdCol] == personCode)
+    .map(row => [
+      row[osStartDateCol],
+      row[osEndDateCol],
+      row[osDaysCol],
+      row[osPersonCountCol],
+      row[osStaysCol],
+      row[osNotesCol]
+    ]);
+
+  // Write headers
+  dashboardSheet.getRange(overnightHeaderRow, 1, 1, overnightHeaders.length).setValues([overnightHeaders]);
+  // Write data if any
+  if (overnightRows.length > 0) {
+    dashboardSheet.getRange(overnightHeaderRow + 1, 1, overnightRows.length, overnightHeaders.length).setValues(overnightRows);
+  }
+  // Optionally, clear old data below the overnight table (not implemented)
+}
