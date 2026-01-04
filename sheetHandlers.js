@@ -47,3 +47,7 @@ function handleUserDashboard(e) {
 function handleHouseDashboard(e) {
 	updateHouseDashboard();
 }
+
+function handleOwnerDashboard(e) {
+	updateOwnerDashboard();
+}

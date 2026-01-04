@@ -35,6 +35,10 @@ function onEdit(e) {
       handleHouseDashboard(e);
       break;
 
+    case "OWNER_DASHBOARD":
+      handleOwnerDashboard(e);
+      break;
+
     // Add more sheets here
   }
 }
