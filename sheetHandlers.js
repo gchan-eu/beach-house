@@ -49,5 +49,5 @@ function handleHouseDashboard(e) {
 }
 
 function handleOwnerDashboard(e) {
-	updateOwnerDashboard();
+	//updateOwnerDashboard();
 }

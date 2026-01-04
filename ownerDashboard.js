@@ -3,7 +3,7 @@
  */
 function updateOwnerDashboard() {
   updateOwnerTransactions();
-  updateOwnerOvernightStays();
+  //updateOwnerOvernightStays();
 }
 
 /**
@@ -79,14 +79,102 @@ function updateOwnerTransactions() {
     "Date", "Type", "Category", "Description", "Amount", "Expense_Notes", "Receipt"
   ];
 
-  // Delete all rows below the header (row 6) to remove old transaction rows
-  const lastRow = dashboardSheet.getLastRow();
-  if (lastRow > 6) {
-    dashboardSheet.deleteRows(7, lastRow - 6);
+  // Clear only the data rows of the Owner_Transactions table (not deleting rows)
+  // Assume table header is at row 6, data starts at row 7
+  const transactionsHeaderRow = 6;
+  const transactionsDataStart = 7;
+  // Find the current position of the overnight stays table header (in case it was pushed down previously)
+  const overnightHeaders = [
+    'Start_Date', 'End_date', 'Days', 'Person_Count', 'Stays', 'Notes'
+  ];
+  let overnightHeaderRow = null;
+  let overnightTableRows = [];
+  let maxRows = dashboardSheet.getLastRow();
+  // Find the overnight stays table header and collect all its rows (header + data)
+  for (let r = transactionsDataStart; r <= maxRows; r++) {
+    const rowVals = dashboardSheet.getRange(r, 1, 1, overnightHeaders.length).getValues()[0];
+    if (
+      rowVals[0] === overnightHeaders[0] &&
+      rowVals[1] === overnightHeaders[1] &&
+      rowVals[2] === overnightHeaders[2] &&
+      rowVals[3] === overnightHeaders[3] &&
+      rowVals[4] === overnightHeaders[4] &&
+      rowVals[5] === overnightHeaders[5]
+    ) {
+      overnightHeaderRow = r;
+      // Collect all rows for the overnight table (header + data)
+      overnightTableRows = [rowVals];
+      // Collect data rows until a blank row or end of sheet
+      for (let rr = r + 1; rr <= maxRows; rr++) {
+        const dataVals = dashboardSheet.getRange(rr, 1, 1, overnightHeaders.length).getValues()[0];
+        const isEmpty = dataVals.every(cell => cell === '' || cell === null);
+        if (isEmpty) break;
+        overnightTableRows.push(dataVals);
+      }
+      break;
+    }
   }
 
+  // Remove the overnight stays table (header + data rows) from the sheet
+  if (overnightHeaderRow !== null) {
+    dashboardSheet.deleteRows(overnightHeaderRow, overnightTableRows.length);
+    maxRows = dashboardSheet.getLastRow();
+  }
+
+  // Calculate how many data rows are needed for the new transactions
+  let ownerTxns = tData.slice(1).filter(row => row[tAccountCol] == ownerAccount);
+  const numDataRows = ownerTxns.length;
+
+  // Delete all data rows in the Owner_Transactions table (from row 7 up to the first empty row or end of sheet)
+  let deleteStart = transactionsDataStart;
+  let deleteEnd = deleteStart - 1;
+  for (let r = transactionsDataStart; r <= maxRows; r++) {
+    const rowVals = dashboardSheet.getRange(r, 1, 1, 1).getValues()[0];
+    if (rowVals[0] === '' || rowVals[0] === null) {
+      break;
+    }
+    deleteEnd = r;
+  }
+  if (deleteEnd >= deleteStart) {
+    dashboardSheet.deleteRows(deleteStart, deleteEnd - deleteStart + 1);
+  }
+
+  // After deletion, the first available row for transactions data is transactionsDataStart
+  // Insert enough rows for the new transactions
+  if (ownerTxns.length > 0) {
+    dashboardSheet.insertRowsBefore(transactionsDataStart, ownerTxns.length);
+  }
+
+  // After inserting, ensure there are exactly 3 blank rows between transactions and overnight table
+  let gapStartRow = transactionsDataStart + ownerTxns.length;
+  let gapRows = 0;
+  maxRows = dashboardSheet.getLastRow();
+  // Count how many blank rows currently exist after transactions
+  while (gapStartRow + gapRows <= maxRows) {
+    const rowVals = dashboardSheet.getRange(gapStartRow + gapRows, 1, 1, 1).getValues()[0];
+    if (rowVals[0] === '' || rowVals[0] === null) {
+      gapRows++;
+    } else {
+      break;
+    }
+  }
+  if (gapRows < 3) {
+    dashboardSheet.insertRowsBefore(gapStartRow + gapRows, 3 - gapRows);
+  } else if (gapRows > 3) {
+    dashboardSheet.deleteRows(gapStartRow, gapRows - 3);
+  }
+
+  // Insert the overnight table after the 3-row gap
+  let overnightInsertRow = gapStartRow + 3;
+  if (overnightTableRows.length > 0) {
+    dashboardSheet.insertRowsBefore(overnightInsertRow, overnightTableRows.length);
+    dashboardSheet.getRange(overnightInsertRow, 1, overnightTableRows.length, overnightHeaders.length).setValues(overnightTableRows);
+  }
+
+  // ownerTxns is already defined above, so do not redeclare it below
+
   // Filter transactions for owner
-  const ownerTxns = tData.slice(1).filter(row => row[tAccountCol] == ownerAccount);
+  ownerTxns = tData.slice(1).filter(row => row[tAccountCol] == ownerAccount);
 
   // Build table rows
   const tableRows = ownerTxns.map(row => {
@@ -246,21 +334,6 @@ function updateOwnerTransactions() {
       }
     }
 
-    // Add footer row with sum of Amount column
-    const footerRow = Array(tableHeaders.length).fill('');
-    footerRow[3] = 'Total:'; // Description column (index 3, now D)
-    // Amount column is index 4 (column E)
-    const amountStart = 7;
-    const amountEnd = 7 + tableRows.length - 1;
-    footerRow[4] = `=SUM(E${amountStart}:E${amountEnd})`;
-    const footerRange = dashboardSheet.getRange(7 + tableRows.length, 1, 1, tableHeaders.length);
-    footerRange.setValues([footerRow]);
-    // Apply visual formatting to footer row
-    footerRange.setFontWeight('bold');
-    footerRange.setBackground('#e0e0e0'); // Light gray background
-    footerRange.setBorder(true, true, true, true, true, true, '#888', SpreadsheetApp.BorderStyle.SOLID);
-    // Add a top border to separate footer from data
-    footerRange.setBorder(true, null, null, null, null, null, '#888', SpreadsheetApp.BorderStyle.SOLID_MEDIUM);
   }
 }
 
@@ -282,8 +355,16 @@ function updateOwnerOvernightStays() {
     row++;
   }
   // Now row points to the first empty row after the transactions table data
-  // The footer is at row-1, so the overnight table should start after a gap
-  const overnightHeaderRow = row + 1;
+  // The footer is at row-1
+  const footerRow = row - 1;
+  // Insert 1 buffer row with a value in all columns, then 2 more empty rows after the transactions footer
+  dashboardSheet.insertRowsAfter(footerRow, 3);
+  // Get the number of columns in the transactions table (same as tableHeaders in updateOwnerTransactions)
+  var transactionsColCount = 7; // "Date", "Type", "Category", "Description", "Amount", "Expense_Notes", "Receipt"
+  var bufferRow = Array(transactionsColCount).fill('---');
+  dashboardSheet.getRange(footerRow + 1, 1, 1, transactionsColCount).setValues([bufferRow]);
+  // The overnight table should start after the gap
+  const overnightHeaderRow = footerRow + 3 + 1;
 
   // Define headers
   const overnightHeaders = [
