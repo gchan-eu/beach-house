@@ -3,7 +3,7 @@
  */
 function updateOwnerDashboard() {
   updateOwnerTransactions();
-  //updateOwnerOvernightStays();
+  updateOwnerOvernightStays();
 }
 
 /**
@@ -11,6 +11,7 @@ function updateOwnerDashboard() {
  * Table headers are at row 6. Transaction rows are filtered by owner account number (from B1).
  */
 function updateOwnerTransactions() {
+  Logger.log('updateOwnerTransactions() running');
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const dashboardSheet = ss.getSheetByName("OWNER_DASHBOARD");
   const peopleSheet = ss.getSheetByName("PEOPLE");
@@ -123,7 +124,45 @@ function updateOwnerTransactions() {
 
   // Calculate how many data rows are needed for the new transactions
   let ownerTxns = tData.slice(1).filter(row => row[tAccountCol] == ownerAccount);
+  // Sort transactions by Date descending, then by ID descending
+  const tIdCol = tHeaders.indexOf("ID");
+  ownerTxns.sort((a, b) => {
+    const dateA = new Date(a[tDateCol]);
+    const dateB = new Date(b[tDateCol]);
+    if (dateB - dateA !== 0) {
+      return dateB - dateA;
+    }
+    // If dates are equal, sort by ID descending (assuming numeric or string comparison)
+    const idA = a[tIdCol];
+    const idB = b[tIdCol];
+    if (idA == null && idB == null) return 0;
+    if (idA == null) return 1;
+    if (idB == null) return -1;
+    // If IDs are numbers, compare numerically; else, compare as strings
+    if (!isNaN(Number(idA)) && !isNaN(Number(idB))) {
+      return Number(idB) - Number(idA);
+    }
+    return (idB + '').localeCompare(idA + '');
+  });
   const numDataRows = ownerTxns.length;
+
+  // Calculate and update sums in E1-E4
+  let sumAll = 0;
+  let sumDeposit = 0;
+  let sumWithdrawal = 0;
+  let sumChargeRecon = 0;
+  ownerTxns.forEach(row => {
+    const amount = parseFloat(row[tAmountCol]) || 0;
+    const type = row[tTypeCol];
+    sumAll += amount;
+    if (type === "101 - Deposit") sumDeposit += amount;
+    if (type === "201 - Withdrawal") sumWithdrawal += amount;
+    if (type === "401 - Charge" || type === "402 - Reconciliation") sumChargeRecon += amount;
+  });
+  dashboardSheet.getRange("E1").setValue(sumAll);
+  dashboardSheet.getRange("E2").setValue(sumDeposit);
+  dashboardSheet.getRange("E3").setValue(sumWithdrawal);
+  dashboardSheet.getRange("E4").setValue(sumChargeRecon);
 
   // Delete all data rows in the Owner_Transactions table (from row 7 up to the first empty row or end of sheet)
   let deleteStart = transactionsDataStart;
@@ -173,8 +212,8 @@ function updateOwnerTransactions() {
 
   // ownerTxns is already defined above, so do not redeclare it below
 
-  // Filter transactions for owner
-  ownerTxns = tData.slice(1).filter(row => row[tAccountCol] == ownerAccount);
+  // Filter transactions for owner (already sorted above)
+  // ownerTxns = tData.slice(1).filter(row => row[tAccountCol] == ownerAccount);
 
   // Build table rows
   const tableRows = ownerTxns.map(row => {
@@ -188,44 +227,18 @@ function updateOwnerTransactions() {
     let expRowIdx = expData.findIndex(r => r[expIdCol] == txnExpenseId);
     let expRow = expRowIdx >= 0 ? expData[expRowIdx] : null;
     let expCode = expRow ? expRow[expCodeCol] : "";
-    let expDate = expRow ? expRow[expDateCol] : "";
     let expNotes = expRow ? expRow[expNotesCol] : "";
-    // Append start and end date if present
-    if (expRow) {
-      const expStartDateCol = expHeaders.indexOf("Start_Date");
-      const expEndDateCol = expHeaders.indexOf("End_Date");
-      const startDate = expStartDateCol >= 0 ? expRow[expStartDateCol] : "";
-      const endDate = expEndDateCol >= 0 ? expRow[expEndDateCol] : "";
-      if (startDate && endDate) {
-        function formatDate(d) {
-          if (d instanceof Date) {
-            const day = ("0" + d.getDate()).slice(-2);
-            const month = ("0" + (d.getMonth() + 1)).slice(-2);
-            const year = ("" + d.getFullYear()).slice(-2);
-            return `${day}/${month}/${year}`;
-          } else if (typeof d === "string" && d.match(/^\d{4}-\d{2}-\d{2}/)) {
-            const [y, m, day] = d.split("-");
-            return `${day}/${m}/${y.slice(-2)}`;
-          } else {
-            return d;
-          }
-        }
-        expNotes = `${expNotes} (${formatDate(startDate)}-${formatDate(endDate)})`;
-      }
-    }
     // Use rich text for receipt if available (expRowIdx-1 because expReceiptRichText starts from row 2)
     let expReceipt = "";
     if (expRowIdx > 0 && expReceiptRichText[expRowIdx - 1]) {
       const rich = expReceiptRichText[expRowIdx - 1];
-      Logger.log(`Expense row ${expRowIdx} rich.getText(): ${rich.getText()}, rich.getLinkUrl(): ${rich.getLinkUrl()}`);
-      if (rich.getLinkUrl()) {
+       if (rich.getLinkUrl()) {
         expReceipt = rich.getLinkUrl();
       } else {
         expReceipt = rich.getText();
       }
     } else if (expRowIdx === 0 && expReceiptRichText[0]) {
       const rich = expReceiptRichText[0];
-      Logger.log(`Expense row 0 rich.getText(): ${rich.getText()}, rich.getLinkUrl(): ${rich.getLinkUrl()}`);
       if (rich.getLinkUrl()) {
         expReceipt = rich.getLinkUrl();
       } else {
@@ -233,10 +246,8 @@ function updateOwnerTransactions() {
       }
     } else if (expRow && typeof expReceiptCol === 'number') {
       expReceipt = expRow[expReceiptCol];
-      Logger.log(`Expense row ${expRowIdx} fallback value: ${expReceipt}`);
     }
     if (expReceipt && typeof expReceipt === "string" && expReceipt.trim() !== "") {
-      Logger.log(`expReceipt for Expense_ID ${txnExpenseId}: ${expReceipt}`);
     }
 
     let expTypeRow = expTypeData.find(r => r[expTypeCodeCol] == expCode);
@@ -292,6 +303,9 @@ function updateOwnerTransactions() {
       // Expense_Date is no longer a column, so get it from expRow
       let expenseDate = "";
       let expNotesVal = "";
+      let expStartDate = "";
+      let expEndDate = "";
+      let expAmount = "";
       // Find expense row index by ID again
       const txnExpenseId = ownerTxns[i][tExpenseIdCol];
       let expRowIdx = expData.findIndex(r => r[expIdCol] == txnExpenseId);
@@ -299,6 +313,12 @@ function updateOwnerTransactions() {
       if (expRow) {
         expenseDate = expRow[expDateCol];
         expNotesVal = expRow[expNotesCol];
+        const expStartDateCol = expHeaders.indexOf("Start_Date");
+        const expEndDateCol = expHeaders.indexOf("End_Date");
+        if (expStartDateCol >= 0) expStartDate = expRow[expStartDateCol];
+        if (expEndDateCol >= 0) expEndDate = expRow[expEndDateCol];
+        const expAmountCol = expHeaders.indexOf("Amount");
+        if (expAmountCol >= 0) expAmount = expRow[expAmountCol];
       }
       const expenseNotes = tableRows[i][5]; // Expense_Notes column
       // Notes column is deprecated, so get transactionNotes from ownerTxns
@@ -317,12 +337,27 @@ function updateOwnerTransactions() {
         const [y, m, d] = iso.split('-');
         return `${d}/${m}/${y.slice(-2)}`;
       }
-      if (typeValue === '401 - Charge') {
+      if (typeValue === '401 - Charge' || typeValue === '402 - Reconciliation') {
         noteValue =
-          'Expense Date: ' + (expenseDate ? formatToDDMMYY(expenseDate) : '') + '\n' +
-          'Transaction Notes: ' + (transactionNotes ? transactionNotes : '');
+          'Expense Date: ' + (expenseDate ? formatToDDMMYY(expenseDate) : '') + '\n';
+        // Format expense amount as euro currency (2 decimals)
+        let formattedAmount = '';
+        if (expAmount !== undefined && expAmount !== null && expAmount !== '') {
+          let num = Number(expAmount);
+          if (!isNaN(num)) {
+            formattedAmount = num.toLocaleString('en-US', { style: 'currency', currency: 'EUR', minimumFractionDigits: 2, maximumFractionDigits: 2 });
+          } else {
+            formattedAmount = expAmount;
+          }
+        }
+        noteValue += 'Expense Amount: ' + formattedAmount + '\n';
+        // Add Consumption Period if both Start_Date and End_Date are present
+        if (expStartDate && expEndDate) {
+          noteValue += 'Period: ' + formatToDDMMYY(expStartDate) + ' - ' + formatToDDMMYY(expEndDate) + '\n';
+        }
+        noteValue += 'Notes: ' + (transactionNotes ? transactionNotes : '');
       } else if (typeValue === '101 - Deposit') {
-        noteValue = 'Transaction Notes: ' + (transactionNotes ? transactionNotes : '');
+        noteValue = 'Notes: ' + (transactionNotes ? transactionNotes : '');
       } else {
         noteValue = transactionNotes ? transactionNotes : '';
       }
@@ -333,7 +368,6 @@ function updateOwnerTransactions() {
         amountCell.setNote('');
       }
     }
-
   }
 }
 
@@ -342,34 +376,47 @@ function updateOwnerTransactions() {
  * Columns: Start_Date, End_date, Days, Person_Count, Stays, Notes
  */
 function updateOwnerOvernightStays() {
+  Logger.log('updateOwnerOvernightStays() running');
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const dashboardSheet = ss.getSheetByName("OWNER_DASHBOARD");
   const peopleSheet = ss.getSheetByName("PEOPLE");
-  const overnightSheet = ss.getSheetByName("Overnight_Stays");
+  const overnightSheet = ss.getSheetByName("OVERNIGHT_STAYS");
   if (!dashboardSheet || !peopleSheet || !overnightSheet) return;
 
-  // Find the last row of the transactions table (footer row)
-  // Table header is at row 6, data starts at row 7
-  let row = 7;
-  while (dashboardSheet.getRange(row, 1).getValue() !== "" || dashboardSheet.getRange(row, 2).getValue() !== "") {
-    row++;
-  }
-  // Now row points to the first empty row after the transactions table data
-  // The footer is at row-1
-  const footerRow = row - 1;
-  // Insert 1 buffer row with a value in all columns, then 2 more empty rows after the transactions footer
-  dashboardSheet.insertRowsAfter(footerRow, 3);
-  // Get the number of columns in the transactions table (same as tableHeaders in updateOwnerTransactions)
-  var transactionsColCount = 7; // "Date", "Type", "Category", "Description", "Amount", "Expense_Notes", "Receipt"
-  var bufferRow = Array(transactionsColCount).fill('---');
-  dashboardSheet.getRange(footerRow + 1, 1, 1, transactionsColCount).setValues([bufferRow]);
-  // The overnight table should start after the gap
-  const overnightHeaderRow = footerRow + 3 + 1;
-
-  // Define headers
+  // Define headers for the prebuilt table
   const overnightHeaders = [
-    'Start_Date', 'End_date', 'Days', 'Person_Count', 'Stays', 'Notes'
+    'Start_Date', 'End_Date', 'Days', 'Person_Count', 'Stays', 'Notes'
   ];
+
+  // Find the Owner_Overnight_Stays table header row in the dashboard sheet
+  let headerRow = null;
+  const scanRows = 200; // Scan first 200 rows to find the header, regardless of blank lines
+  // Log the first 200 rows' values for columns 1-6 for debugging
+  let debugRows = [];
+  for (let r = 1; r <= scanRows; r++) {
+    const rowVals = dashboardSheet.getRange(r, 1, 1, overnightHeaders.length).getValues()[0];
+    debugRows.push({row: r, values: rowVals});
+    if (
+      rowVals[0] === overnightHeaders[0] &&
+      rowVals[1] === overnightHeaders[1] &&
+      rowVals[2] === overnightHeaders[2] &&
+      rowVals[3] === overnightHeaders[3] &&
+      rowVals[4] === overnightHeaders[4] &&
+      rowVals[5] === overnightHeaders[5]
+    ) {
+      headerRow = r;
+      Logger.log('Owner_Overnight_Stays header found at row: ' + headerRow);
+      break;
+    }
+  }
+  if (!headerRow) {
+    Logger.log('No header row found for the Owner_Overnight_Stays table');
+    // Log the first 200 rows for manual inspection
+    debugRows.forEach(obj => {
+      Logger.log('Row ' + obj.row + ': ' + JSON.stringify(obj.values));
+    });
+    return;
+  }
 
   // Get owner name from B1
   const ownerName = dashboardSheet.getRange("B1").getValue();
@@ -399,9 +446,14 @@ function updateOwnerOvernightStays() {
   const osStaysCol = overnightHeadersRow.indexOf("Total_Stays");
   const osNotesCol = overnightHeadersRow.indexOf("Notes");
 
-  // Filter rows for this person
-  const overnightRows = overnightData.slice(1)
+  // Filter rows for this person and sort by Start_Date descending (latest on top)
+  let overnightRows = overnightData.slice(1)
     .filter(row => row[osPersonIdCol] == personCode)
+    .sort((a, b) => {
+      const dateA = new Date(a[osStartDateCol]);
+      const dateB = new Date(b[osStartDateCol]);
+      return dateB - dateA;
+    })
     .map(row => [
       row[osStartDateCol],
       row[osEndDateCol],
@@ -411,11 +463,25 @@ function updateOwnerOvernightStays() {
       row[osNotesCol]
     ]);
 
-  // Write headers
-  dashboardSheet.getRange(overnightHeaderRow, 1, 1, overnightHeaders.length).setValues([overnightHeaders]);
-  // Write data if any
-  if (overnightRows.length > 0) {
-    dashboardSheet.getRange(overnightHeaderRow + 1, 1, overnightRows.length, overnightHeaders.length).setValues(overnightRows);
+
+  // Delete all data rows under the Owner_Overnight_Stays table header (no footer logic, no empty rows)
+  let dataStartRow = headerRow + 1;
+  let lastRow = dashboardSheet.getLastRow();
+  // Find the last non-empty row for this table (stop at first blank row)
+  let dataEndRow = dataStartRow - 1;
+  for (let r = dataStartRow; r <= lastRow; r++) {
+    const rowVals = dashboardSheet.getRange(r, 1, 1, overnightHeaders.length).getValues()[0];
+    const isEmpty = rowVals.every(cell => cell === '' || cell === null);
+    if (isEmpty) break;
+    dataEndRow = r;
   }
-  // Optionally, clear old data below the overnight table (not implemented)
+  // Delete all data rows (remove rows from the sheet)
+  if (dataEndRow >= dataStartRow) {
+    dashboardSheet.deleteRows(dataStartRow, dataEndRow - dataStartRow + 1);
+  }
+  // Insert new rows for new data if needed
+  if (overnightRows.length > 0) {
+    dashboardSheet.insertRowsBefore(dataStartRow, overnightRows.length);
+    dashboardSheet.getRange(dataStartRow, 1, overnightRows.length, overnightHeaders.length).setValues(overnightRows);
+  }
 }
